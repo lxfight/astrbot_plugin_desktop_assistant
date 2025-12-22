@@ -2,10 +2,10 @@
 # ================================
 
 name: "astrbot_plugin_desktop_assistant"
-description: "Astrbot桌面悬浮球助手 - 提供可拖拽的悬浮球界面、多模态对话窗口、桌面感知和主动对话功能"
-author: "木有知"
+description: "桌面悬浮球助手 - 提供可拖拽的悬浮球界面、多模态对话窗口、桌面感知和主动对话功能"
+author: "AstrBot Team"
 version: "1.0.0"
-repo: "https://github.com/muyouzhi6/astrbot_plugin_desktop_assistant"
+repo: ""
 
 # 插件类型：平台适配器
 plugin_type: "platform"
@@ -155,7 +155,4 @@ config_schema:
       screenshot:
         type: "string"
         label: "快速截图"
-
         default: "Ctrl+Alt+S"
-
-
