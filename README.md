@@ -40,5 +40,10 @@ pip install -r astrbot_plugin_desktop_assistant/requirements.txt
 - **主动对话**：开启/关闭基于屏幕内容的主动交互功能。
 - **监控间隔**：设置屏幕分析的时间间隔。
 
+## ✨bug反馈及改进
+QQ群：1037856742
+诚挚欢迎广大开发者提出宝贵的意见以及优化代码
+
 ## 📄 许可证
+
 本项目采用 MIT 许可证。
