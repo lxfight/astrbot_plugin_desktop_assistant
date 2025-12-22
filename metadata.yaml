@@ -1,0 +1,158 @@
+# 桌面悬浮球助手 - 插件元数据
+# ================================
+
+name: "astrbot_plugin_desktop_assistant"
+description: "桌面悬浮球助手 - 提供可拖拽的悬浮球界面、多模态对话窗口、桌面感知和主动对话功能"
+author: "AstrBot Team"
+version: "1.0.0"
+repo: ""
+
+# 插件类型：平台适配器
+plugin_type: "platform"
+
+# 标签
+tags:
+  - "desktop"
+  - "gui"
+  - "multimodal"
+  - "assistant"
+
+# 支持的平台
+supported_platforms:
+  - "windows"
+  - "macos"
+  - "linux"
+
+# 最低 AstrBot 版本要求
+min_astrbot_version: "4.0.0"
+
+# 配置项说明（用于 WebUI 展示）
+config_schema:
+  # 外观配置
+  appearance:
+    type: "group"
+    label: "外观设置"
+    properties:
+      avatar_path:
+        type: "string"
+        label: "自定义头像路径"
+        description: "悬浮球头像图片路径，留空使用默认头像"
+        default: ""
+      ball_size:
+        type: "integer"
+        label: "悬浮球尺寸"
+        description: "悬浮球直径（像素）"
+        default: 64
+        min: 32
+        max: 128
+      ball_opacity:
+        type: "float"
+        label: "悬浮球透明度"
+        description: "0.0 完全透明，1.0 完全不透明"
+        default: 0.9
+        min: 0.3
+        max: 1.0
+      theme:
+        type: "select"
+        label: "主题"
+        description: "界面主题风格"
+        default: "auto"
+        options:
+          - value: "auto"
+            label: "跟随系统"
+          - value: "light"
+            label: "浅色"
+          - value: "dark"
+            label: "深色"
+
+  # 对话窗口配置
+  chat_window:
+    type: "group"
+    label: "对话窗口"
+    properties:
+      width:
+        type: "integer"
+        label: "窗口宽度"
+        default: 400
+        min: 300
+        max: 800
+      height:
+        type: "integer"
+        label: "窗口高度"
+        default: 600
+        min: 400
+        max: 1200
+      font_size:
+        type: "integer"
+        label: "字体大小"
+        default: 14
+        min: 10
+        max: 24
+      show_timestamp:
+        type: "boolean"
+        label: "显示时间戳"
+        default: true
+
+  # 桌面监控配置
+  desktop_monitor:
+    type: "group"
+    label: "桌面监控"
+    properties:
+      enable:
+        type: "boolean"
+        label: "启用桌面监控"
+        description: "定时截图监控桌面状态"
+        default: false
+      interval:
+        type: "integer"
+        label: "监控间隔（秒）"
+        default: 60
+        min: 10
+        max: 600
+
+  # 主动对话配置
+  proactive_dialog:
+    type: "group"
+    label: "主动对话"
+    properties:
+      enable:
+        type: "boolean"
+        label: "启用主动对话"
+        description: "AI 根据桌面状态主动发起对话"
+        default: false
+      interval:
+        type: "integer"
+        label: "检查间隔（秒）"
+        default: 300
+        min: 60
+        max: 3600
+
+  # 语音配置
+  voice:
+    type: "group"
+    label: "语音设置"
+    properties:
+      enable_tts:
+        type: "boolean"
+        label: "启用语音播放"
+        description: "播放 AI 的语音回复"
+        default: true
+      auto_play:
+        type: "boolean"
+        label: "自动播放"
+        description: "收到语音消息时自动播放"
+        default: false
+
+  # 快捷键配置
+  hotkeys:
+    type: "group"
+    label: "快捷键"
+    properties:
+      toggle_window:
+        type: "string"
+        label: "显示/隐藏窗口"
+        default: "Ctrl+Alt+A"
+      screenshot:
+        type: "string"
+        label: "快速截图"
+        default: "Ctrl+Alt+S"

@@ -1,0 +1,270 @@
+/* 
+ * AstrBot 桌面助手样式表
+ * 
+ * 使用现代化扁平设计风格
+ */
+
+/* ======== 全局样式 ======== */
+
+QWidget {
+    font-family: "Microsoft YaHei", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+}
+
+/* ======== 悬浮球窗口 ======== */
+
+FloatingBallWindow {
+    background-color: transparent;
+}
+
+/* ======== 气泡消息 ======== */
+
+BubbleWidget {
+    background-color: rgba(0, 0, 0, 0.75);
+    border-radius: 10px;
+    padding: 10px 15px;
+}
+
+BubbleWidget QLabel {
+    color: white;
+    font-size: 13px;
+}
+
+/* ======== 对话窗口 ======== */
+
+ChatWindow {
+    background-color: #f5f5f5;
+}
+
+ChatWindow #inputArea {
+    background-color: white;
+    border-top: 1px solid #e0e0e0;
+}
+
+/* ======== 消息列表区域 ======== */
+
+QScrollArea {
+    border: none;
+    background-color: #f5f5f5;
+}
+
+QScrollArea > QWidget > QWidget {
+    background-color: transparent;
+}
+
+QScrollBar:vertical {
+    border: none;
+    background-color: #f0f0f0;
+    width: 8px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #c0c0c0;
+    border-radius: 4px;
+    min-height: 30px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #a0a0a0;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+/* ======== 输入区域 ======== */
+
+QTextEdit {
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 8px;
+    background-color: white;
+    font-size: 14px;
+    selection-background-color: #0084ff;
+    selection-color: white;
+}
+
+QTextEdit:focus {
+    border-color: #0084ff;
+}
+
+/* ======== 按钮样式 ======== */
+
+QPushButton {
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 6px 12px;
+    background-color: white;
+    color: #333;
+}
+
+QPushButton:hover {
+    background-color: #f5f5f5;
+    border-color: #d0d0d0;
+}
+
+QPushButton:pressed {
+    background-color: #e8e8e8;
+}
+
+QPushButton:disabled {
+    background-color: #f5f5f5;
+    color: #999;
+    border-color: #e0e0e0;
+}
+
+/* 主要按钮（发送按钮） */
+QPushButton#sendButton {
+    background-color: #0084ff;
+    color: white;
+    border: none;
+    font-weight: bold;
+}
+
+QPushButton#sendButton:hover {
+    background-color: #0073e6;
+}
+
+QPushButton#sendButton:pressed {
+    background-color: #0062cc;
+}
+
+/* 工具按钮 */
+QPushButton.toolButton {
+    border: none;
+    background-color: transparent;
+    padding: 4px;
+    font-size: 18px;
+}
+
+QPushButton.toolButton:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+    border-radius: 4px;
+}
+
+/* ======== 消息气泡 ======== */
+
+/* 用户消息气泡 */
+.userBubble {
+    background-color: #0084ff;
+    color: white;
+    border-radius: 18px;
+    padding: 10px 15px;
+    max-width: 70%;
+}
+
+/* AI 消息气泡 */
+.aiBubble {
+    background-color: white;
+    color: #333;
+    border: 1px solid #e0e0e0;
+    border-radius: 18px;
+    padding: 10px 15px;
+    max-width: 70%;
+}
+
+/* 系统消息 */
+.systemMessage {
+    color: #888;
+    font-size: 12px;
+    text-align: center;
+    padding: 5px 0;
+}
+
+/* ======== 图片消息 ======== */
+
+.imageBubble {
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.imageBubble QLabel {
+    border-radius: 12px;
+}
+
+/* ======== 语音消息 ======== */
+
+.voiceBubble {
+    background-color: #e8f5e9;
+    border-radius: 18px;
+    padding: 8px 15px;
+}
+
+.voiceBubble:hover {
+    background-color: #c8e6c9;
+}
+
+/* ======== 文件消息 ======== */
+
+.fileBubble {
+    background-color: #fff3e0;
+    border: 1px solid #ffe0b2;
+    border-radius: 12px;
+    padding: 10px 15px;
+}
+
+.fileBubble:hover {
+    background-color: #ffe0b2;
+}
+
+/* ======== 工具提示 ======== */
+
+QToolTip {
+    background-color: #333;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-size: 12px;
+}
+
+/* ======== 菜单样式 ======== */
+
+QMenu {
+    background-color: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 5px;
+}
+
+QMenu::item {
+    padding: 8px 30px 8px 15px;
+    border-radius: 4px;
+}
+
+QMenu::item:selected {
+    background-color: #f0f0f0;
+}
+
+QMenu::separator {
+    height: 1px;
+    background-color: #e0e0e0;
+    margin: 5px 10px;
+}
+
+/* ======== 对话框样式 ======== */
+
+QDialog {
+    background-color: white;
+}
+
+QDialog QLabel {
+    color: #333;
+}
+
+/* ======== 进度指示器 ======== */
+
+QProgressBar {
+    border: none;
+    border-radius: 4px;
+    background-color: #e0e0e0;
+    height: 4px;
+    text-align: center;
+}
+
+QProgressBar::chunk {
+    background-color: #0084ff;
+    border-radius: 4px;
+}
