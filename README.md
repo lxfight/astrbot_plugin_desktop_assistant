@@ -40,6 +40,8 @@ pip install -r astrbot_plugin_desktop_assistant/requirements.txt
 
 <img width="460" height="489" alt="PixPin_2025-12-22_17-01-45" src="https://github.com/user-attachments/assets/f8ed97ba-9ac5-48d3-a731-efe626717622" />
 <img width="1317" height="1235" alt="PixPin_2025-12-22_17-04-10" src="https://github.com/user-attachments/assets/5d9fa923-1ea9-4cb6-88bf-e1e5ef0c8299" />
+<img width="2560" height="1271" alt="PixPin_2025-12-22_18-25-10" src="https://github.com/user-attachments/assets/ca1ccd00-51b4-4de8-abf1-bdf00053e08f" />
+
 
 
 
@@ -47,5 +49,6 @@ pip install -r astrbot_plugin_desktop_assistant/requirements.txt
 ## 📄 许可证
 
 本项目采用 MIT 许可证。
+
 
 
