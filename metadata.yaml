@@ -1,5 +1,5 @@
 name: "astrbot_plugin_desktop_assistant"
-description: "Astrbot桌面悬浮球助手 - 提供可拖拽的悬浮球界面、多模态对话窗口、桌面感知和主动对话功能"
+description: "Astrbot桌面悬浮球助手（兼容云服务器Astrbot配合本地客户端使用） - 提供可拖拽的悬浮球界面、多模态对话窗口、桌面感知和主动对话功能"
 author: "木有知"
 version: "1.0.0"
 repo: "https://github.com/muyouzhi6/astrbot_plugin_desktop_assistant"
@@ -10,5 +10,6 @@ tags:
   - "gui"
   - "multimodal"
   - "assistant"
+
 
 
