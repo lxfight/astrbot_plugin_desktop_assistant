@@ -1,11 +1,11 @@
-# 🖥️ AstrBot 桌面助手服务端插件 (Server Plugin)（兼容云服务器Astrbot配合本地客户端使用）
+# 🖥️ AstrBot 桌面助手服务端插件 (Server Plugin)
 
 [![AstrBot](https://img.shields.io/badge/AstrBot-v3.0%2B-purple)](https://github.com/Soulter/AstrBot)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
 本插件是 [AstrBot 桌面助手客户端](https://github.com/muyouzhi6/Astrbot-desktop-assistant) 的服务端适配器，负责处理客户端连接、消息路由及多模态数据交互。
 
-> ⚠️ **注意**：本项目仅为服务端插件，需配合桌面客户端使用。初次安装本插件后重启Astrbot。
+> ⚠️ **注意**：本项目仅为服务端插件，需配合桌面客户端使用。
 
 ## ✨ 核心功能
 
@@ -17,7 +17,20 @@
 - **屏幕监控**：接收并处理客户端上传的屏幕截图，为视觉模型提供输入。
 - **主动交互**：支持基于屏幕内容的主动对话与建议（需配置）。
 
-### 🛠️ 扩展能力
+### 📷 远程截图功能 (新功能)
+支持通过 QQ/NapCat (OneBot11 协议) 远程控制桌面客户端进行截图并返回图片。
+
+**数据流**：
+```
+QQ → NapCat → AstrBot → 本插件 → WebSocket 命令 → 桌面客户端 → 截图 → 返回图片 → QQ
+```
+
+**使用方式**：
+- 在 QQ 中发送 `/screenshot` 或 `/截图` 命令
+- 桌面客户端会自动截取当前屏幕并返回图片
+- 发送 `/desktop_status` 或 `/桌面状态` 查看客户端连接状态
+
+### ️ 扩展能力
 - **鉴权管理**：管理客户端的连接认证与权限。
 - **资源代理**：处理语音、图片等媒体资源的转发与存储。
 
@@ -35,21 +48,10 @@ pip install -r astrbot_plugin_desktop_assistant/requirements.txt
 ```
 
 ## ⚙️ 配置说明
-安装后重启 AstrBot，插件无需配置。
-
-
-<img width="460" height="489" alt="PixPin_2025-12-22_17-01-45" src="https://github.com/user-attachments/assets/f8ed97ba-9ac5-48d3-a731-efe626717622" />
-<img width="1317" height="1235" alt="PixPin_2025-12-22_17-04-10" src="https://github.com/user-attachments/assets/5d9fa923-1ea9-4cb6-88bf-e1e5ef0c8299" />
-<img width="2560" height="1271" alt="PixPin_2025-12-22_18-25-10" src="https://github.com/user-attachments/assets/ca1ccd00-51b4-4de8-abf1-bdf00053e08f" />
-
-
-
-
+安装后重启 AstrBot，在插件配置页面可调整以下参数：
+- **服务端口**：API 监听端口。
+- **主动对话**：开启/关闭基于屏幕内容的主动交互功能。
+- **监控间隔**：设置屏幕分析的时间间隔。
 
 ## 📄 许可证
-
 本项目采用 MIT 许可证。
-
-
-
-

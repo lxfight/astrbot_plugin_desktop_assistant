@@ -6,3 +6,6 @@ Pillow>=9.0.0
 
 # 系统工具
 psutil>=5.9.0
+
+# WebSocket 服务器（独立运行，端口 6190）
+websockets>=12.0

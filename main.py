@@ -2,6 +2,7 @@
 桌面悬浮球助手 - AstrBot 平台适配器插件 (服务端)
 
 提供桌面感知和主动对话功能的服务端适配器。
+支持通过 QQ (NapCat/OneBot11) 远程控制桌面端截图。
 """
 
 import asyncio
@@ -11,9 +12,11 @@ import uuid
 from typing import Optional
 
 from astrbot import logger
-from astrbot.api import star
+from astrbot.api import star, llm_tool
 from astrbot.api.event import AstrMessageEvent, MessageChain
 from astrbot.api.message_components import Image, Plain
+from astrbot.api.star import Context
+from astrbot.core.star.register import register_command
 from astrbot.core.platform import (
     AstrBotMessage,
     MessageMember,
@@ -31,10 +34,20 @@ from .services.proactive_dialog import (
     TriggerEvent,
     TriggerType,
 )
-from .ws_handler import ClientManager, WebSocketHandler, ClientDesktopState
+from .ws_handler import ClientManager, WebSocketHandler, ClientDesktopState, ScreenshotResponse
+from .ws_server import WebSocketServer, patch_client_manager_for_websockets
 
 # 全局 WebSocket 客户端管理器
 client_manager = ClientManager()
+
+# 为 ClientManager 添加 websockets 库支持
+patch_client_manager_for_websockets(client_manager)
+
+# 全局 WebSocket 处理器
+ws_handler: Optional[WebSocketHandler] = None
+
+# 全局 WebSocket 服务器
+ws_server: Optional[WebSocketServer] = None
 
 # ============================================================================
 # 插件主类（占位符，平台适配器通过装饰器注册）
@@ -44,27 +57,147 @@ class Main(star.Star):
     """
     桌面悬浮球助手插件主类
     
-    注意：实际功能由 DesktopAssistantAdapter 平台适配器实现，
-    此类仅作为 AstrBot 插件系统的入口点。
+    提供：
+    1. 平台适配器模式：桌面监控和主动对话
+    2. 命令模式：支持通过 /screenshot 命令远程截图
+    3. 独立 WebSocket 服务器：端口 6190
     """
     
     def __init__(self, context: star.Context) -> None:
+        global ws_handler, ws_server
+        
         self.context = context
         self.ws_handler = WebSocketHandler(client_manager)
+        ws_handler = self.ws_handler  # 保存全局引用
         
-        # 注册 WebSocket 路由
-        try:
-            # 尝试注册 WebSocket 路由
-            # 注意：这里假设 context.app 是 FastAPI/Starlette 应用实例
-            if hasattr(self.context, "app"):
-                self.context.app.add_websocket_route("/ws/client", self.ws_handler.handle_websocket)
-                logger.info("桌面助手 WebSocket 服务已启动: /ws/client")
-            else:
-                logger.warning("无法注册 WebSocket 路由: context.app 不存在")
-        except Exception as e:
-            logger.error(f"注册 WebSocket 路由失败: {e}")
+        # 创建独立的 WebSocket 服务器（端口 6190）
+        self.ws_server = WebSocketServer(client_manager, host="0.0.0.0", port=6190)
+        ws_server = self.ws_server  # 保存全局引用
+        
+        # 启动 WebSocket 服务器（在后台异步运行）
+        asyncio.create_task(self._start_ws_server())
             
         logger.info("桌面悬浮球助手插件已加载（平台适配器模式）")
+        logger.info("📡 WebSocket 服务器将在端口 6190 启动")
+        logger.info("   桌面客户端请连接: ws://服务器IP:6190/ws/client?session_id=xxx&token=xxx")
+    
+    async def _start_ws_server(self):
+        """启动 WebSocket 服务器"""
+        try:
+            await asyncio.sleep(1)  # 等待一秒确保其他组件初始化完成
+            success = await self.ws_server.start()
+            if not success:
+                logger.error("WebSocket 服务器启动失败，远程截图功能将不可用")
+        except Exception as e:
+            logger.error(f"启动 WebSocket 服务器时发生错误: {e}")
+            logger.error(traceback.format_exc())
+    
+    # ========================================================================
+    # 命令处理器：远程截图
+    # ========================================================================
+    
+    @register_command("screenshot", alias={"截图", "jietu"})
+    async def screenshot_command(self, event: AstrMessageEvent):
+        """远程截图：通过 QQ 发送此命令让桌面端执行截图并返回图片"""
+        async for result in self._do_remote_screenshot(event, None, silent=True):
+            yield result
+    
+    @llm_tool("view_desktop_screen")
+    async def view_desktop_screen_tool(self, event: AstrMessageEvent):
+        """
+        查看用户当前电脑桌面屏幕内容。
+        
+        当你需要了解用户正在做什么、查看用户屏幕上的内容、或者需要根据用户当前的操作提供帮助时，
+        可以调用此函数来获取用户桌面的实时截图。
+        
+        使用场景举例：
+        - 用户询问"看看我在干什么"
+        - 用户说"帮我看看这个怎么操作"
+        - 用户说"屏幕上显示的是什么"
+        - 需要根据用户当前操作提供上下文相关的帮助
+        
+        返回：桌面截图图片
+        """
+        async for result in self._do_remote_screenshot(event, None, silent=False):
+            yield result
+    
+    async def _do_remote_screenshot(
+        self,
+        event: AstrMessageEvent,
+        target_session_id: Optional[str] = None,
+        silent: bool = False
+    ):
+        """
+        执行远程截图
+        
+        Args:
+            event: 消息事件
+            target_session_id: 目标客户端 session_id
+            silent: 静默模式，只返回图片不返回额外信息
+        """
+        # 检查是否有已连接的客户端
+        connected_clients = client_manager.get_connected_client_ids()
+        
+        if not connected_clients:
+            yield event.plain_result("❌ 没有已连接的桌面客户端，无法执行截图。\n\n请确保桌面端程序已启动并连接到服务器。")
+            return
+        
+        try:
+            # 请求截图
+            response: ScreenshotResponse = await client_manager.request_screenshot(
+                session_id=target_session_id,
+                timeout=30.0
+            )
+            
+            if response.success and response.image_path:
+                # 截图成功，发送图片
+                yield event.image_result(response.image_path)
+                # 静默模式下不发送额外信息
+                if not silent:
+                    yield event.plain_result(
+                        f"✅ 截图成功！\n"
+                        f"• 分辨率: {response.width}x{response.height}\n"
+                        f"• 客户端: {response.session_id[:16]}..."
+                    )
+            else:
+                # 截图失败
+                error_msg = response.error_message or "未知错误"
+                yield event.plain_result(f"❌ 截图失败: {error_msg}")
+                
+        except Exception as e:
+            logger.error(f"远程截图异常: {e}")
+            logger.error(traceback.format_exc())
+            yield event.plain_result(f"❌ 截图请求异常: {str(e)}")
+    
+    @register_command("desktop_status", alias={"桌面状态", "zhuomian"})
+    async def desktop_status_command(self, event: AstrMessageEvent):
+        """查看当前连接的桌面客户端状态"""
+        connected_clients = client_manager.get_connected_client_ids()
+        
+        if not connected_clients:
+            yield event.plain_result(
+                "📊 桌面客户端状态\n\n"
+                "❌ 当前没有已连接的客户端。\n\n"
+                "请确保桌面端程序已启动并配置正确的服务器地址。"
+            )
+            return
+        
+        # 构建状态信息
+        status_lines = ["📊 桌面客户端状态\n"]
+        status_lines.append(f"✅ 已连接客户端数量: {len(connected_clients)}\n")
+        
+        for i, session_id in enumerate(connected_clients, 1):
+            state = client_manager.get_client_state(session_id)
+            status_lines.append(f"\n【客户端 {i}】")
+            status_lines.append(f"• Session: {session_id[:20]}...")
+            
+            if state:
+                status_lines.append(f"• 活动窗口: {state.active_window_title or '未知'}")
+                status_lines.append(f"• 进程: {state.active_window_process or '未知'}")
+                if state.received_at:
+                    status_lines.append(f"• 最后更新: {state.received_at.strftime('%H:%M:%S')}")
+        
+        yield event.plain_result("\n".join(status_lines))
 
 
 # ============================================================================
