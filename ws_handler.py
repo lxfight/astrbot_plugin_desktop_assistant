@@ -1,33 +1,49 @@
+"""
+WebSocket 客户端管理器和消息处理模块
+
+这个模块提供：
+1. ClientManager: 管理所有已连接的桌面客户端
+2. 数据类: ClientDesktopState, ScreenshotRequest, ScreenshotResponse
+3. 消息处理逻辑
+
+注意：这个模块不再包含 WebSocket 服务器逻辑，服务器功能已移至 ws_server.py
+"""
+
 import asyncio
 import base64
 import json
-import logging
 import os
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional
 
-from starlette.websockets import WebSocket, WebSocketDisconnect
 from astrbot.api import logger
 
 
 @dataclass
 class ClientDesktopState:
-    """客户端上报的桌面状态"""
-    session_id: str
-    timestamp: str
-    active_window_title: Optional[str] = None
-    active_window_process: Optional[str] = None
-    active_window_pid: Optional[int] = None
-    screenshot_base64: Optional[str] = None
-    screenshot_width: Optional[int] = None
-    screenshot_height: Optional[int] = None
-    running_apps: Optional[list] = None
-    window_changed: bool = False
-    previous_window_title: Optional[str] = None
-    received_at: Optional[datetime] = None
+    """
+    客户端上报的桌面状态
+    
+    桌面客户端会定期上报当前的桌面状态，包括：
+    - 活动窗口信息（标题、进程名、PID）
+    - 可选的截图数据
+    - 运行中的应用列表
+    """
+    session_id: str                              # 客户端会话 ID
+    timestamp: str                               # 状态时间戳
+    active_window_title: Optional[str] = None   # 活动窗口标题
+    active_window_process: Optional[str] = None # 活动窗口进程名
+    active_window_pid: Optional[int] = None     # 活动窗口进程 PID
+    screenshot_base64: Optional[str] = None     # 截图 Base64 数据
+    screenshot_width: Optional[int] = None      # 截图宽度
+    screenshot_height: Optional[int] = None     # 截图高度
+    running_apps: Optional[list] = None         # 运行中的应用列表
+    window_changed: bool = False                # 窗口是否发生变化
+    previous_window_title: Optional[str] = None # 上一个窗口标题
+    received_at: Optional[datetime] = None      # 服务端接收时间
     
     @classmethod
     def from_dict(cls, session_id: str, data: dict) -> "ClientDesktopState":
@@ -50,11 +66,15 @@ class ClientDesktopState:
 
 @dataclass
 class ScreenshotRequest:
-    """截图请求"""
-    request_id: str
-    session_id: str
-    created_at: datetime = field(default_factory=datetime.now)
-    timeout: float = 30.0  # 超时时间（秒）
+    """
+    截图请求
+    
+    当用户发送截图命令时，会创建一个截图请求并发送给桌面客户端。
+    """
+    request_id: str                                     # 请求唯一 ID
+    session_id: str                                     # 目标客户端会话 ID
+    created_at: datetime = field(default_factory=datetime.now)  # 创建时间
+    timeout: float = 30.0                               # 超时时间（秒）
     
     def is_expired(self) -> bool:
         """检查请求是否已超时"""
@@ -64,26 +84,39 @@ class ScreenshotRequest:
 
 @dataclass
 class ScreenshotResponse:
-    """截图响应"""
-    request_id: str
-    session_id: str
-    success: bool
-    image_base64: Optional[str] = None
-    image_path: Optional[str] = None
-    error_message: Optional[str] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
-    timestamp: datetime = field(default_factory=datetime.now)
+    """
+    截图响应
+    
+    桌面客户端执行截图后返回的结果。
+    """
+    request_id: str                              # 对应的请求 ID
+    session_id: str                              # 客户端会话 ID
+    success: bool                                # 是否成功
+    image_base64: Optional[str] = None           # 图片 Base64 数据
+    image_path: Optional[str] = None             # 图片保存路径
+    error_message: Optional[str] = None          # 错误信息
+    width: Optional[int] = None                  # 图片宽度
+    height: Optional[int] = None                 # 图片高度
+    timestamp: datetime = field(default_factory=datetime.now)  # 响应时间
 
 
 class ClientManager:
-    """WebSocket 客户端管理器"""
+    """
+    WebSocket 客户端管理器
+    
+    管理所有已连接的桌面客户端，提供：
+    - 客户端连接/断开管理
+    - 消息发送（单发/广播）
+    - 桌面状态管理
+    - 截图请求/响应处理
+    
+    这个类被 ws_server.py 中的 StandaloneWebSocketServer 使用。
+    """
     
     def __init__(self):
-        # 存储活跃的连接: session_id -> WebSocket
-        self.active_connections: Dict[str, WebSocket] = {}
         # 存储客户端的最新桌面状态: session_id -> ClientDesktopState
         self.client_states: Dict[str, ClientDesktopState] = {}
+        
         # 桌面状态更新回调
         self.on_desktop_state_update: Optional[Callable[[ClientDesktopState], Any]] = None
         
@@ -95,47 +128,77 @@ class ClientManager:
         self._screenshot_save_dir = "./temp/remote_screenshots"
         os.makedirs(self._screenshot_save_dir, exist_ok=True)
         
-    async def connect(self, websocket: WebSocket, session_id: str):
-        """处理新连接"""
-        await websocket.accept()
-        self.active_connections[session_id] = websocket
-        logger.info(f"客户端已连接: session_id={session_id}")
+        # WebSocket 服务器引用（由 main.py 设置）
+        self._ws_server = None
+    
+    def set_ws_server(self, ws_server):
+        """设置 WebSocket 服务器引用"""
+        self._ws_server = ws_server
+    
+    def get_active_clients_count(self) -> int:
+        """获取活跃客户端数量"""
+        if self._ws_server:
+            return self._ws_server.get_active_clients_count()
+        return 0
+    
+    def get_connected_client_ids(self) -> List[str]:
+        """获取所有已连接客户端的 session_id 列表"""
+        if self._ws_server:
+            return self._ws_server.get_connected_client_ids()
+        return []
+    
+    async def send_message(self, session_id: str, message: dict) -> bool:
+        """
+        发送消息给指定客户端
         
-    def disconnect(self, session_id: str):
-        """处理断开连接"""
-        if session_id in self.active_connections:
-            del self.active_connections[session_id]
-            logger.info(f"客户端已断开: session_id={session_id}")
+        Args:
+            session_id: 目标客户端会话 ID
+            message: 要发送的消息（字典格式）
             
-    async def send_message(self, session_id: str, message: dict):
-        """发送消息给指定客户端"""
-        if session_id not in self.active_connections:
-            logger.warning(f"发送消息失败: 客户端未连接 session_id={session_id}")
-            return
+        Returns:
+            是否发送成功
+        """
+        if not self._ws_server:
+            logger.warning("WebSocket 服务器未初始化")
+            return False
+        
+        return await self._ws_server.send_to_client(session_id, message)
+    
+    async def broadcast(self, message: dict) -> int:
+        """
+        广播消息给所有客户端
+        
+        Args:
+            message: 要发送的消息（字典格式）
             
-        websocket = self.active_connections[session_id]
-        try:
-            await websocket.send_json(message)
-        except Exception as e:
-            logger.error(f"发送消息异常: {e}")
-            # 可能需要移除失效连接
-            self.disconnect(session_id)
+        Returns:
+            成功发送的客户端数量
+        """
+        if not self._ws_server:
+            logger.warning("WebSocket 服务器未初始化")
+            return 0
+        
+        return await self._ws_server.broadcast(message)
+    
+    def update_client_state(self, session_id: str, state_data: dict) -> ClientDesktopState:
+        """
+        更新客户端桌面状态
+        
+        Args:
+            session_id: 客户端会话 ID
+            state_data: 状态数据字典
             
-    async def broadcast(self, message: dict):
-        """广播消息"""
-        for session_id, websocket in list(self.active_connections.items()):
-            try:
-                await websocket.send_json(message)
-            except Exception as e:
-                logger.error(f"广播消息异常: session_id={session_id}, error={e}")
-                self.disconnect(session_id)
-                
-    def update_client_state(self, session_id: str, state_data: dict):
-        """更新客户端桌面状态"""
+        Returns:
+            更新后的 ClientDesktopState 对象
+        """
         state = ClientDesktopState.from_dict(session_id, state_data)
         self.client_states[session_id] = state
         logger.debug(f"客户端桌面状态已更新: session_id={session_id}, window={state.active_window_title}")
         return state
+    
+    def remove_client_state(self, session_id: str):
+        """移除客户端状态（客户端断开时调用）"""
+        self.client_states.pop(session_id, None)
         
     def get_client_state(self, session_id: str) -> Optional[ClientDesktopState]:
         """获取客户端桌面状态"""
@@ -144,14 +207,6 @@ class ClientManager:
     def get_all_client_states(self) -> Dict[str, ClientDesktopState]:
         """获取所有客户端桌面状态"""
         return self.client_states.copy()
-        
-    def get_active_clients_count(self) -> int:
-        """获取活跃客户端数量"""
-        return len(self.active_connections)
-    
-    def get_connected_client_ids(self) -> List[str]:
-        """获取所有已连接客户端的 session_id 列表"""
-        return list(self.active_connections.keys())
     
     async def request_screenshot(
         self,
@@ -169,17 +224,19 @@ class ClientManager:
             ScreenshotResponse 对象
         """
         # 确定目标客户端
+        connected_clients = self.get_connected_client_ids()
+        
         if session_id is None:
-            if not self.active_connections:
+            if not connected_clients:
                 return ScreenshotResponse(
                     request_id="",
                     session_id="",
                     success=False,
                     error_message="没有已连接的桌面客户端"
                 )
-            session_id = next(iter(self.active_connections.keys()))
+            session_id = connected_clients[0]
         
-        if session_id not in self.active_connections:
+        if session_id not in connected_clients:
             return ScreenshotResponse(
                 request_id="",
                 session_id=session_id,
@@ -198,7 +255,8 @@ class ClientManager:
         self._pending_screenshot_requests[request_id] = request
         
         # 创建 Future 用于等待响应
-        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future = loop.create_future()
         self._screenshot_futures[request_id] = future
         
         try:
@@ -296,77 +354,84 @@ class ClientManager:
         
         return response
 
-class WebSocketHandler:
-    """WebSocket 处理器"""
+
+class MessageHandler:
+    """
+    消息处理器
+    
+    处理来自桌面客户端的各种消息类型。
+    这个类被 main.py 使用，作为 StandaloneWebSocketServer 的消息回调。
+    """
     
     def __init__(self, client_manager: ClientManager):
+        """
+        初始化消息处理器
+        
+        Args:
+            client_manager: 客户端管理器实例
+        """
         self.manager = client_manager
+    
+    async def handle_message(self, session_id: str, data: dict):
+        """
+        处理客户端消息
         
-    async def handle_websocket(self, websocket: WebSocket):
-        """处理 WebSocket 连接请求"""
-        # 简单的鉴权：检查 token (在 query params 中)
-        # 注意：实际生产环境应使用更严格的验证，例如验证 JWT
-        token = websocket.query_params.get("token")
-        session_id = websocket.query_params.get("session_id")
+        Args:
+            session_id: 客户端会话 ID
+            data: 消息数据
+        """
+        msg_type = data.get("type", "")
         
-        if not token or not session_id:
-            logger.warning(f"WebSocket 连接拒绝: 缺少 token 或 session_id")
-            await websocket.close(code=1008)
-            return
-
-        # TODO: 验证 token 有效性
-        # 这里暂时信任，因为是内网/本地部署插件
-        
-        await self.manager.connect(websocket, session_id)
-        
-        try:
-            while True:
-                data = await websocket.receive_json()
-                # 处理客户端发送的消息
-                msg_type = data.get("type")
+        if msg_type == "desktop_state":
+            # 处理桌面状态上报
+            await self._handle_desktop_state(session_id, data)
+            
+        elif msg_type == "screenshot_response":
+            # 处理截图响应
+            response_data = data.get("data", {})
+            self.manager.handle_screenshot_response(session_id, response_data)
+            logger.debug(f"收到截图响应: session_id={session_id}")
+            
+        elif msg_type == "command_result":
+            # 处理通用命令执行结果
+            command = data.get("command")
+            if command == "screenshot":
+                response_data = data.get("data", {})
+                self.manager.handle_screenshot_response(session_id, response_data)
                 
-                if msg_type == "heartbeat":
-                    await websocket.send_json({"type": "heartbeat_ack"})
-                    
-                elif msg_type == "desktop_state":
-                    # 处理客户端桌面状态上报
-                    state_data = data.get("data", {})
-                    state = self.manager.update_client_state(session_id, state_data)
-                    
-                    # 触发回调（如果设置）
-                    if self.manager.on_desktop_state_update:
-                        try:
-                            result = self.manager.on_desktop_state_update(state)
-                            if asyncio.iscoroutine(result):
-                                await result
-                        except Exception as e:
-                            logger.error(f"桌面状态回调执行失败: {e}")
-                    
-                    # 确认收到
-                    await websocket.send_json({
-                        "type": "desktop_state_ack",
-                        "timestamp": state.timestamp,
-                    })
-                    
-                elif msg_type == "state_sync":
-                    # 处理客户端状态同步（保留向后兼容）
-                    pass
-                
-                elif msg_type == "screenshot_response":
-                    # 处理客户端截图响应
-                    response_data = data.get("data", {})
-                    self.manager.handle_screenshot_response(session_id, response_data)
-                    logger.debug(f"收到截图响应: session_id={session_id}")
-                
-                elif msg_type == "command_result":
-                    # 处理通用命令执行结果
-                    command = data.get("command")
-                    if command == "screenshot":
-                        response_data = data.get("data", {})
-                        self.manager.handle_screenshot_response(session_id, response_data)
-                    
-        except WebSocketDisconnect:
-            self.manager.disconnect(session_id)
-        except Exception as e:
-            logger.error(f"WebSocket 错误: {e}")
-            self.manager.disconnect(session_id)
+        elif msg_type == "state_sync":
+            # 处理客户端状态同步（保留向后兼容）
+            pass
+        
+        else:
+            logger.debug(f"收到未知类型消息: type={msg_type}, session_id={session_id}")
+    
+    async def _handle_desktop_state(self, session_id: str, data: dict):
+        """处理桌面状态上报"""
+        state_data = data.get("data", {})
+        state = self.manager.update_client_state(session_id, state_data)
+        
+        # 触发回调（如果设置）
+        if self.manager.on_desktop_state_update:
+            try:
+                result = self.manager.on_desktop_state_update(state)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as e:
+                logger.error(f"桌面状态回调执行失败: {e}")
+        
+        # 发送确认
+        await self.manager.send_message(session_id, {
+            "type": "desktop_state_ack",
+            "timestamp": state.timestamp,
+        })
+    
+    def on_client_connect(self, session_id: str):
+        """客户端连接回调"""
+        logger.info(f"客户端已连接: session_id={session_id}")
+    
+    def on_client_disconnect(self, session_id: str):
+        """客户端断开回调"""
+        logger.info(f"客户端已断开: session_id={session_id}")
+        # 清理客户端状态
+        self.manager.remove_client_state(session_id)

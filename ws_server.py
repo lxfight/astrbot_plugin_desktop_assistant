@@ -1,269 +1,297 @@
 """
-独立的 WebSocket 服务器
+独立 WebSocket 服务器模块
 
-由于 AstrBot 不支持插件直接注册 WebSocket 路由，
-此模块提供一个独立运行的 WebSocket 服务器。
+使用 websockets 库创建独立的 WebSocket 服务器，监听端口 6190。
+这个方案不依赖 AstrBot 主应用，避免了框架兼容性问题。
+
+桌面客户端连接地址: ws://服务器IP:6190
 """
 
 import asyncio
 import json
 import traceback
-from typing import Optional, Any, Dict
+from typing import Optional, Callable, Any, Dict, Set
+from urllib.parse import parse_qs, urlparse
 
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger("ws_server")
-
-# 使用 websockets 库
-WEBSOCKETS_AVAILABLE = False
-WEBSOCKETS_VERSION = "unknown"
 try:
     import websockets
-    WEBSOCKETS_VERSION = getattr(websockets, '__version__', 'unknown')
-    logger.info(f"websockets 库版本: {WEBSOCKETS_VERSION}")
-    
-    # websockets 13.x+ 使用新的 API
-    # websockets 10.x-12.x 使用 websockets.serve
-    try:
-        # 尝试新版本 API (13.x+)
-        from websockets.asyncio.server import serve as ws_serve
-        logger.debug("使用 websockets 13.x+ asyncio.server API")
-    except ImportError:
-        # 回退到旧版本 API
-        ws_serve = websockets.serve
-        logger.debug("使用 websockets 经典 API")
-    
+    from websockets.server import serve, WebSocketServerProtocol
+    from websockets.exceptions import ConnectionClosed
     WEBSOCKETS_AVAILABLE = True
-except ImportError as e:
-    logger.warning(f"websockets 库未安装或导入失败: {e}")
-    logger.warning("请运行: pip install websockets>=12.0")
+except ImportError:
+    WEBSOCKETS_AVAILABLE = False
+    WebSocketServerProtocol = None
+
+from astrbot.api import logger
 
 
-class WebSocketServer:
-    """独立的 WebSocket 服务器"""
+class StandaloneWebSocketServer:
+    """
+    独立 WebSocket 服务器
     
-    def __init__(self, client_manager, host: str = "0.0.0.0", port: int = 6190):
+    使用 websockets 库在指定端口运行，不依赖 AstrBot 主应用。
+    支持客户端认证、心跳检测、消息分发等功能。
+    """
+    
+    def __init__(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 6190,
+        on_client_connect: Optional[Callable[[str], Any]] = None,
+        on_client_disconnect: Optional[Callable[[str], Any]] = None,
+        on_message: Optional[Callable[[str, dict], Any]] = None,
+    ):
         """
         初始化 WebSocket 服务器
         
         Args:
-            client_manager: ClientManager 实例
-            host: 监听地址
-            port: 监听端口（默认 6190，与 AstrBot 的 6185 不冲突）
+            host: 监听地址，默认 0.0.0.0（所有网卡）
+            port: 监听端口，默认 6190
+            on_client_connect: 客户端连接回调
+            on_client_disconnect: 客户端断开回调  
+            on_message: 消息接收回调
         """
-        self.client_manager = client_manager
         self.host = host
         self.port = port
+        self.on_client_connect = on_client_connect
+        self.on_client_disconnect = on_client_disconnect
+        self.on_message = on_message
+        
+        # 活跃连接: session_id -> websocket
+        self.connections: Dict[str, WebSocketServerProtocol] = {}
+        
+        # 服务器状态
         self._server = None
         self._running = False
+        self._server_task: Optional[asyncio.Task] = None
         
+    @property
+    def is_running(self) -> bool:
+        """服务器是否正在运行"""
+        return self._running and self._server is not None
+    
+    def get_connected_client_ids(self) -> list:
+        """获取所有已连接客户端的 session_id"""
+        return list(self.connections.keys())
+    
+    def get_active_clients_count(self) -> int:
+        """获取活跃客户端数量"""
+        return len(self.connections)
+    
     async def start(self):
         """启动 WebSocket 服务器"""
         if not WEBSOCKETS_AVAILABLE:
-            logger.error("websockets 库未安装，无法启动 WebSocket 服务器")
+            logger.error("❌ websockets 库未安装，无法启动 WebSocket 服务器")
+            logger.error("   请运行: pip install websockets>=12.0")
             return False
-            
+        
+        if self._running:
+            logger.warning("WebSocket 服务器已在运行中")
+            return True
+        
         try:
-            logger.info(f"正在启动 WebSocket 服务器 (websockets {WEBSOCKETS_VERSION})...")
-            logger.info(f"  监听地址: {self.host}:{self.port}")
-            
-            self._server = await ws_serve(
+            # 创建服务器
+            self._server = await serve(
                 self._handle_connection,
                 self.host,
                 self.port,
-                ping_interval=30,
-                ping_timeout=10,
+                ping_interval=30,  # 心跳间隔 30 秒
+                ping_timeout=10,   # 心跳超时 10 秒
             )
+            
             self._running = True
-            logger.info(f"✅ WebSocket 服务器已启动: ws://{self.host}:{self.port}")
-            logger.info(f"   桌面客户端连接地址: ws://服务器IP:{self.port}/ws/client?session_id=xxx&token=xxx")
-            logger.info(f"   注意：请确保防火墙已开放 {self.port} 端口")
+            
+            logger.info("=" * 60)
+            logger.info("✅ WebSocket 服务器启动成功！")
+            logger.info(f"   监听地址: {self.host}:{self.port}")
+            logger.info(f"   桌面客户端连接地址: ws://服务器IP:{self.port}")
+            logger.info("=" * 60)
+            
             return True
+            
         except OSError as e:
-            if "address already in use" in str(e).lower() or e.errno == 98 or e.errno == 10048:
-                logger.error(f"端口 {self.port} 已被占用，WebSocket 服务器无法启动")
-                logger.error("请检查是否有其他程序占用此端口，或修改配置使用其他端口")
+            if "address already in use" in str(e).lower() or e.errno == 10048:
+                logger.error(f"❌ 端口 {self.port} 已被占用！")
+                logger.error("   请检查是否有其他程序占用该端口，或修改配置使用其他端口")
             else:
-                logger.error(f"WebSocket 服务器启动失败 (OSError): {e}")
+                logger.error(f"❌ WebSocket 服务器启动失败: {e}")
             return False
         except Exception as e:
-            logger.error(f"WebSocket 服务器启动失败: {e}")
+            logger.error(f"❌ WebSocket 服务器启动失败: {e}")
             logger.error(traceback.format_exc())
             return False
-            
+    
     async def stop(self):
         """停止 WebSocket 服务器"""
+        if not self._running:
+            return
+        
         self._running = False
+        
+        # 关闭所有连接
+        for session_id, ws in list(self.connections.items()):
+            try:
+                await ws.close(1001, "Server shutting down")
+            except Exception:
+                pass
+        self.connections.clear()
+        
+        # 关闭服务器
         if self._server:
             self._server.close()
             await self._server.wait_closed()
-            logger.info("WebSocket 服务器已停止")
-            
-    async def _handle_connection(self, websocket):
+            self._server = None
+        
+        logger.info("WebSocket 服务器已停止")
+    
+    async def _handle_connection(self, websocket: WebSocketServerProtocol):
         """
         处理 WebSocket 连接
         
-        Args:
-            websocket: WebSocket 连接
+        支持两种连接方式：
+        1. ws://服务器IP:6190/ws/client?session_id=xxx&token=xxx (标准路径)
+        2. ws://服务器IP:6190?session_id=xxx&token=xxx (根路径兼容)
         """
-        # 解析查询参数
-        # 从 websocket.path 或 websocket.request.path 获取路径
-        session_id = None
-        token = None
+        # 解析 URL 路径和参数
+        full_path = websocket.path if hasattr(websocket, 'path') else "/"
         
-        try:
-            # 获取请求路径
-            if hasattr(websocket, 'path'):
-                path = websocket.path
-            elif hasattr(websocket, 'request') and hasattr(websocket.request, 'path'):
-                path = websocket.request.path
-            else:
-                path = "/"
-                
-            logger.debug(f"WebSocket 连接请求路径: {path}")
-            
-            if "?" in path:
-                query_string = path.split("?", 1)[1]
-                params = {}
-                for p in query_string.split("&"):
-                    if "=" in p:
-                        key, value = p.split("=", 1)
-                        params[key] = value
-                session_id = params.get("session_id")
-                token = params.get("token")
-        except Exception as e:
-            logger.warning(f"解析 WebSocket 查询参数失败: {e}")
-            
-        if not session_id:
-            logger.warning(f"WebSocket 连接拒绝: 缺少 session_id")
-            await websocket.close(1008, "Missing session_id")
+        # 分离路径和查询参数
+        if "?" in full_path:
+            path_part, query_string = full_path.split("?", 1)
+        else:
+            path_part = full_path
+            query_string = ""
+        
+        params = parse_qs(query_string)
+        
+        # 验证路径（支持 /ws/client 和 / 两种路径）
+        valid_paths = ["/ws/client", "/", ""]
+        if path_part not in valid_paths:
+            logger.warning(f"WebSocket 连接拒绝: 无效路径 '{path_part}'，支持的路径: {valid_paths}")
+            await websocket.close(1008, f"Invalid path: {path_part}")
             return
-            
-        # 注册连接
-        await self._register_connection(websocket, session_id)
+        
+        session_id = params.get("session_id", [None])[0]
+        token = params.get("token", [None])[0]
+        
+        logger.info(f"收到 WebSocket 连接请求: path={path_part}, session_id={session_id}, token={'*' * 6 if token else 'None'}")
+        
+        # 验证参数
+        if not session_id or not token:
+            logger.warning("WebSocket 连接拒绝: 缺少 session_id 或 token")
+            await websocket.close(1008, "Missing session_id or token")
+            return
+        
+        # TODO: 验证 token 有效性（当前信任本地连接）
+        
+        # 记录连接
+        self.connections[session_id] = websocket
+        logger.info(f"✅ 客户端已连接: session_id={session_id}")
+        
+        # 触发连接回调
+        if self.on_client_connect:
+            try:
+                result = self.on_client_connect(session_id)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as e:
+                logger.error(f"连接回调执行失败: {e}")
         
         try:
+            # 消息循环
             async for message in websocket:
-                await self._handle_message(websocket, session_id, message)
-        except websockets.exceptions.ConnectionClosed as e:
+                try:
+                    data = json.loads(message)
+                    await self._handle_message(session_id, websocket, data)
+                except json.JSONDecodeError:
+                    logger.warning(f"收到无效 JSON 消息: {message[:100]}...")
+                except Exception as e:
+                    logger.error(f"处理消息失败: {e}")
+                    logger.error(traceback.format_exc())
+                    
+        except ConnectionClosed as e:
             logger.info(f"客户端断开连接: session_id={session_id}, code={e.code}")
         except Exception as e:
             logger.error(f"WebSocket 连接错误: {e}")
         finally:
-            self._unregister_connection(session_id)
+            # 清理连接
+            self.connections.pop(session_id, None)
+            logger.info(f"客户端已移除: session_id={session_id}")
             
-    async def _register_connection(self, websocket, session_id: str):
-        """注册客户端连接"""
-        self.client_manager.active_connections[session_id] = websocket
-        logger.info(f"✅ 客户端已连接: session_id={session_id[:20]}...")
+            # 触发断开回调
+            if self.on_client_disconnect:
+                try:
+                    result = self.on_client_disconnect(session_id)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as e:
+                    logger.error(f"断开回调执行失败: {e}")
+    
+    async def _handle_message(
+        self,
+        session_id: str,
+        websocket: WebSocketServerProtocol,
+        data: dict
+    ):
+        """处理客户端消息"""
+        msg_type = data.get("type", "")
         
-        # 发送欢迎消息
-        try:
-            await websocket.send(json.dumps({
-                "type": "connected",
-                "message": "已连接到桌面助手服务器",
-                "session_id": session_id
-            }))
-        except Exception as e:
-            logger.warning(f"发送欢迎消息失败: {e}")
-            
-    def _unregister_connection(self, session_id: str):
-        """注销客户端连接"""
-        if session_id in self.client_manager.active_connections:
-            del self.client_manager.active_connections[session_id]
-            logger.info(f"客户端已断开: session_id={session_id[:20]}...")
-            
-    async def _handle_message(self, websocket, session_id: str, message: str):
+        # 心跳消息
+        if msg_type == "heartbeat":
+            await self._send_json(websocket, {"type": "heartbeat_ack"})
+            return
+        
+        # 触发消息回调
+        if self.on_message:
+            try:
+                result = self.on_message(session_id, data)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as e:
+                logger.error(f"消息回调执行失败: {e}")
+    
+    async def send_to_client(self, session_id: str, data: dict) -> bool:
         """
-        处理收到的消息
+        发送消息给指定客户端
         
         Args:
-            websocket: WebSocket 连接
-            session_id: 客户端会话 ID
-            message: 收到的消息
+            session_id: 客户端 session_id
+            data: 要发送的数据（字典）
+            
+        Returns:
+            是否发送成功
         """
-        try:
-            data = json.loads(message)
-            msg_type = data.get("type")
+        websocket = self.connections.get(session_id)
+        if not websocket:
+            logger.warning(f"发送失败: 客户端未连接 session_id={session_id}")
+            return False
+        
+        return await self._send_json(websocket, data)
+    
+    async def broadcast(self, data: dict) -> int:
+        """
+        广播消息给所有客户端
+        
+        Args:
+            data: 要发送的数据（字典）
             
-            if msg_type == "heartbeat":
-                await websocket.send(json.dumps({"type": "heartbeat_ack"}))
-                
-            elif msg_type == "desktop_state":
-                # 处理客户端桌面状态上报
-                state_data = data.get("data", {})
-                state = self.client_manager.update_client_state(session_id, state_data)
-                
-                # 触发回调
-                if self.client_manager.on_desktop_state_update:
-                    try:
-                        result = self.client_manager.on_desktop_state_update(state)
-                        if asyncio.iscoroutine(result):
-                            await result
-                    except Exception as e:
-                        logger.error(f"桌面状态回调执行失败: {e}")
-                
-                # 确认收到
-                await websocket.send(json.dumps({
-                    "type": "desktop_state_ack",
-                    "timestamp": state.timestamp,
-                }))
-                
-            elif msg_type == "screenshot_response":
-                # 处理客户端截图响应
-                response_data = data.get("data", {})
-                self.client_manager.handle_screenshot_response(session_id, response_data)
-                logger.debug(f"收到截图响应: session_id={session_id[:20]}...")
-                
-            elif msg_type == "command_result":
-                # 处理通用命令执行结果
-                command = data.get("command")
-                if command == "screenshot":
-                    response_data = data.get("data", {})
-                    self.client_manager.handle_screenshot_response(session_id, response_data)
-                    
+        Returns:
+            成功发送的客户端数量
+        """
+        success_count = 0
+        for session_id, websocket in list(self.connections.items()):
+            if await self._send_json(websocket, data):
+                success_count += 1
             else:
-                logger.debug(f"收到未知消息类型: {msg_type}")
-                
-        except json.JSONDecodeError as e:
-            logger.warning(f"JSON 解析失败: {e}")
-        except Exception as e:
-            logger.error(f"处理消息失败: {e}")
-
-
-def patch_client_manager_for_websockets(client_manager):
-    """
-    为 ClientManager 添加 websockets 库支持
+                # 发送失败，移除连接
+                self.connections.pop(session_id, None)
+        return success_count
     
-    原来的 ClientManager 是为 Starlette WebSocket 设计的，
-    这里添加对 websockets 库的支持。
-    """
-    
-    async def patched_send_message(session_id: str, message: dict):
-        """发送消息到指定客户端"""
-        if session_id not in client_manager.active_connections:
-            logger.warning(f"发送消息失败: 客户端未连接 session_id={session_id}")
-            return
-            
-        websocket = client_manager.active_connections[session_id]
+    async def _send_json(self, websocket: WebSocketServerProtocol, data: dict) -> bool:
+        """发送 JSON 数据"""
         try:
-            # 检查是 websockets 库的连接还是 Starlette 的连接
-            if hasattr(websocket, 'send') and not hasattr(websocket, 'send_json'):
-                # websockets 库
-                await websocket.send(json.dumps(message))
-            elif hasattr(websocket, 'send_json'):
-                # Starlette WebSocket
-                await websocket.send_json(message)
-            else:
-                # 尝试通用发送
-                await websocket.send(json.dumps(message))
+            await websocket.send(json.dumps(data, ensure_ascii=False))
+            return True
         except Exception as e:
-            logger.error(f"发送消息异常: {e}")
-            # 移除失效连接
-            if session_id in client_manager.active_connections:
-                del client_manager.active_connections[session_id]
-    
-    client_manager.send_message = patched_send_message
-    return client_manager
+            logger.error(f"发送消息失败: {e}")
+            return False
