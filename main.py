@@ -49,6 +49,10 @@ ws_handler: Optional[WebSocketHandler] = None
 # 全局 WebSocket 服务器
 ws_server: Optional[WebSocketServer] = None
 
+# WebSocket 服务器启动锁，防止重复启动
+_ws_server_lock = asyncio.Lock()
+_ws_server_started = False
+
 # ============================================================================
 # 插件主类（占位符，平台适配器通过装饰器注册）
 # ============================================================================
@@ -74,23 +78,56 @@ class Main(star.Star):
         self.ws_server = WebSocketServer(client_manager, host="0.0.0.0", port=6190)
         ws_server = self.ws_server  # 保存全局引用
         
-        # 启动 WebSocket 服务器（在后台异步运行）
-        asyncio.create_task(self._start_ws_server())
-            
         logger.info("桌面悬浮球助手插件已加载（平台适配器模式）")
         logger.info("📡 WebSocket 服务器将在端口 6190 启动")
         logger.info("   桌面客户端请连接: ws://服务器IP:6190/ws/client?session_id=xxx&token=xxx")
+        
+        # 注意：不在 __init__ 中启动 WebSocket 服务器
+        # 因为此时可能没有运行中的事件循环
+        # 服务器将在首次命令调用时懒启动
     
-    async def _start_ws_server(self):
-        """启动 WebSocket 服务器"""
-        try:
-            await asyncio.sleep(1)  # 等待一秒确保其他组件初始化完成
-            success = await self.ws_server.start()
-            if not success:
-                logger.error("WebSocket 服务器启动失败，远程截图功能将不可用")
-        except Exception as e:
-            logger.error(f"启动 WebSocket 服务器时发生错误: {e}")
-            logger.error(traceback.format_exc())
+    async def _ensure_ws_server_started(self):
+        """确保 WebSocket 服务器已启动（懒启动模式，带锁保护）"""
+        global _ws_server_started, _ws_server_lock
+        
+        # 快速检查，避免不必要的锁竞争
+        if _ws_server_started:
+            logger.debug("WebSocket 服务器已在运行中")
+            return True
+        
+        logger.info("📡 检测到 WebSocket 服务器尚未启动，正在初始化...")
+        
+        async with _ws_server_lock:
+            # 双重检查
+            if _ws_server_started:
+                logger.debug("WebSocket 服务器已由其他协程启动")
+                return True
+            
+            try:
+                logger.info("🚀 正在启动 WebSocket 服务器 (端口 6190)...")
+                success = await self.ws_server.start()
+                _ws_server_started = success
+                
+                if success:
+                    logger.info("=" * 50)
+                    logger.info("✅ WebSocket 服务器启动成功！")
+                    logger.info(f"   监听地址: ws://0.0.0.0:6190")
+                    logger.info(f"   桌面客户端请连接: ws://服务器IP:6190/ws/client?session_id=xxx&token=xxx")
+                    logger.info("=" * 50)
+                else:
+                    logger.error("=" * 50)
+                    logger.error("❌ WebSocket 服务器启动失败！")
+                    logger.error("   可能原因：")
+                    logger.error("   1. 端口 6190 已被占用")
+                    logger.error("   2. websockets 库未安装 (pip install websockets)")
+                    logger.error("   3. 权限不足")
+                    logger.error("=" * 50)
+                
+                return success
+            except Exception as e:
+                logger.error(f"启动 WebSocket 服务器时发生异常: {e}")
+                logger.error(traceback.format_exc())
+                return False
     
     # ========================================================================
     # 命令处理器：远程截图
@@ -99,8 +136,36 @@ class Main(star.Star):
     @register_command("screenshot", alias={"截图", "jietu"})
     async def screenshot_command(self, event: AstrMessageEvent):
         """远程截图：通过 QQ 发送此命令让桌面端执行截图并返回图片"""
-        async for result in self._do_remote_screenshot(event, None, silent=True):
-            yield result
+        # 使用 print 确保日志一定输出（绕过可能的日志级别问题）
+        print("[DesktopAssistant] 📸 收到截图命令，正在处理...")
+        logger.info("📸 收到截图命令，正在处理...")
+        
+        try:
+            # 确保 WebSocket 服务器已启动
+            print("[DesktopAssistant] 正在确保 WebSocket 服务器启动...")
+            ws_started = await self._ensure_ws_server_started()
+            print(f"[DesktopAssistant] WebSocket 服务器启动结果: {ws_started}")
+            
+            if not ws_started:
+                logger.error("截图命令失败：WebSocket 服务器未能启动")
+                yield event.plain_result(
+                    "❌ WebSocket 服务器未能启动，无法执行远程截图。\n\n"
+                    "请检查服务器日志获取更多信息。"
+                )
+                return
+            
+            client_count = client_manager.get_active_clients_count()
+            print(f"[DesktopAssistant] WebSocket 服务器状态: 已启动, 当前连接数: {client_count}")
+            logger.info(f"WebSocket 服务器状态: 已启动, 当前连接数: {client_count}")
+            
+            async for result in self._do_remote_screenshot(event, None, silent=True):
+                yield result
+        except Exception as e:
+            print(f"[DesktopAssistant] 截图命令执行异常: {e}")
+            logger.error(f"截图命令执行异常: {e}")
+            import traceback
+            traceback.print_exc()
+            yield event.plain_result(f"❌ 截图命令执行异常: {str(e)}")
     
     @llm_tool("view_desktop_screen")
     async def view_desktop_screen_tool(self, event: AstrMessageEvent):
@@ -118,6 +183,9 @@ class Main(star.Star):
         
         返回：桌面截图图片
         """
+        # 确保 WebSocket 服务器已启动
+        await self._ensure_ws_server_started()
+        
         async for result in self._do_remote_screenshot(event, None, silent=False):
             yield result
     
@@ -138,8 +206,31 @@ class Main(star.Star):
         # 检查是否有已连接的客户端
         connected_clients = client_manager.get_connected_client_ids()
         
+        logger.info(f"📊 当前连接状态: 已连接客户端数量 = {len(connected_clients)}")
+        if connected_clients:
+            logger.info(f"   客户端列表: {[c[:20] + '...' for c in connected_clients]}")
+        else:
+            logger.warning("   ⚠️ 没有任何客户端连接！")
+        
         if not connected_clients:
-            yield event.plain_result("❌ 没有已连接的桌面客户端，无法执行截图。\n\n请确保桌面端程序已启动并连接到服务器。")
+            # 提供更详细的诊断信息
+            ws_status = "✅ 已启动" if _ws_server_started else "❌ 未启动"
+            
+            logger.warning("截图请求失败：没有已连接的桌面客户端")
+            
+            yield event.plain_result(
+                f"❌ 没有已连接的桌面客户端，无法执行截图。\n\n"
+                f"📊 诊断信息：\n"
+                f"• WebSocket 服务器状态: {ws_status}\n"
+                f"• 监听端口: 6190\n"
+                f"• 已连接客户端: 0\n\n"
+                f"📝 排查步骤：\n"
+                f"1. 确认桌面客户端程序已启动\n"
+                f"2. 检查桌面客户端配置的服务器 IP 地址是否正确（不是 localhost）\n"
+                f"3. 确保服务器防火墙已开放 6190 端口\n"
+                f"4. 查看桌面客户端控制台是否有连接错误\n\n"
+                f"💡 使用 `.桌面状态` 命令可查看更详细的连接信息"
+            )
             return
         
         try:
@@ -172,18 +263,29 @@ class Main(star.Star):
     @register_command("desktop_status", alias={"桌面状态", "zhuomian"})
     async def desktop_status_command(self, event: AstrMessageEvent):
         """查看当前连接的桌面客户端状态"""
+        # 确保 WebSocket 服务器已启动
+        ws_started = await self._ensure_ws_server_started()
+        
         connected_clients = client_manager.get_connected_client_ids()
+        
+        # 构建 WebSocket 服务器状态
+        ws_status = "✅ 运行中" if ws_started else "❌ 未启动"
         
         if not connected_clients:
             yield event.plain_result(
-                "📊 桌面客户端状态\n\n"
-                "❌ 当前没有已连接的客户端。\n\n"
-                "请确保桌面端程序已启动并配置正确的服务器地址。"
+                f"📊 桌面客户端状态\n\n"
+                f"🌐 WebSocket 服务器: {ws_status}\n"
+                f"📡 监听端口: 6190\n\n"
+                f"❌ 当前没有已连接的客户端。\n\n"
+                f"请确保桌面端程序已启动并配置正确的服务器地址。\n"
+                f"连接地址: ws://服务器IP:6190/ws/client?session_id=xxx&token=xxx"
             )
             return
         
         # 构建状态信息
         status_lines = ["📊 桌面客户端状态\n"]
+        status_lines.append(f"🌐 WebSocket 服务器: {ws_status}")
+        status_lines.append(f"📡 监听端口: 6190")
         status_lines.append(f"✅ 已连接客户端数量: {len(connected_clients)}\n")
         
         for i, session_id in enumerate(connected_clients, 1):

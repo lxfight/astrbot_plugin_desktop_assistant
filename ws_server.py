@@ -7,6 +7,7 @@
 
 import asyncio
 import json
+import traceback
 from typing import Optional, Any, Dict
 
 try:
@@ -17,19 +18,27 @@ except ImportError:
 
 # 使用 websockets 库
 WEBSOCKETS_AVAILABLE = False
+WEBSOCKETS_VERSION = "unknown"
 try:
     import websockets
-    from websockets.asyncio.server import serve, ServerConnection
-    WEBSOCKETS_AVAILABLE = True
-except ImportError:
+    WEBSOCKETS_VERSION = getattr(websockets, '__version__', 'unknown')
+    logger.info(f"websockets 库版本: {WEBSOCKETS_VERSION}")
+    
+    # websockets 13.x+ 使用新的 API
+    # websockets 10.x-12.x 使用 websockets.serve
     try:
-        # 尝试旧版本的导入方式
-        import websockets
-        from websockets import serve
-        WEBSOCKETS_AVAILABLE = True
+        # 尝试新版本 API (13.x+)
+        from websockets.asyncio.server import serve as ws_serve
+        logger.debug("使用 websockets 13.x+ asyncio.server API")
     except ImportError:
-        logger.warning("websockets 库未安装，WebSocket 服务器将无法启动")
-        logger.warning("请运行: pip install websockets")
+        # 回退到旧版本 API
+        ws_serve = websockets.serve
+        logger.debug("使用 websockets 经典 API")
+    
+    WEBSOCKETS_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"websockets 库未安装或导入失败: {e}")
+    logger.warning("请运行: pip install websockets>=12.0")
 
 
 class WebSocketServer:
@@ -57,7 +66,10 @@ class WebSocketServer:
             return False
             
         try:
-            self._server = await websockets.serve(
+            logger.info(f"正在启动 WebSocket 服务器 (websockets {WEBSOCKETS_VERSION})...")
+            logger.info(f"  监听地址: {self.host}:{self.port}")
+            
+            self._server = await ws_serve(
                 self._handle_connection,
                 self.host,
                 self.port,
@@ -66,11 +78,18 @@ class WebSocketServer:
             )
             self._running = True
             logger.info(f"✅ WebSocket 服务器已启动: ws://{self.host}:{self.port}")
-            logger.info(f"   桌面客户端请连接到此地址，路径: /ws/client?session_id=xxx&token=xxx")
+            logger.info(f"   桌面客户端连接地址: ws://服务器IP:{self.port}/ws/client?session_id=xxx&token=xxx")
+            logger.info(f"   注意：请确保防火墙已开放 {self.port} 端口")
             return True
+        except OSError as e:
+            if "address already in use" in str(e).lower() or e.errno == 98 or e.errno == 10048:
+                logger.error(f"端口 {self.port} 已被占用，WebSocket 服务器无法启动")
+                logger.error("请检查是否有其他程序占用此端口，或修改配置使用其他端口")
+            else:
+                logger.error(f"WebSocket 服务器启动失败 (OSError): {e}")
+            return False
         except Exception as e:
             logger.error(f"WebSocket 服务器启动失败: {e}")
-            import traceback
             logger.error(traceback.format_exc())
             return False
             
@@ -89,20 +108,6 @@ class WebSocketServer:
         Args:
             websocket: WebSocket 连接
         """
-        # 获取客户端地址（用于日志）
-        client_address = "unknown"
-        try:
-            if hasattr(websocket, 'remote_address'):
-                client_address = f"{websocket.remote_address[0]}:{websocket.remote_address[1]}"
-            elif hasattr(websocket, 'transport'):
-                peername = websocket.transport.get_extra_info('peername')
-                if peername:
-                    client_address = f"{peername[0]}:{peername[1]}"
-        except Exception:
-            pass
-            
-        logger.info(f"📡 WebSocket 新连接请求: 来自 {client_address}")
-        
         # 解析查询参数
         # 从 websocket.path 或 websocket.request.path 获取路径
         session_id = None
@@ -151,19 +156,8 @@ class WebSocketServer:
             
     async def _register_connection(self, websocket, session_id: str):
         """注册客户端连接"""
-        # 获取客户端地址
-        client_address = "unknown"
-        try:
-            if hasattr(websocket, 'remote_address'):
-                client_address = f"{websocket.remote_address[0]}:{websocket.remote_address[1]}"
-        except Exception:
-            pass
-            
         self.client_manager.active_connections[session_id] = websocket
-        logger.info(f"✅ 客户端已连接:")
-        logger.info(f"   - 来源地址: {client_address}")
-        logger.info(f"   - Session ID: {session_id[:20]}...")
-        logger.info(f"   - 当前连接数: {len(self.client_manager.active_connections)}")
+        logger.info(f"✅ 客户端已连接: session_id={session_id[:20]}...")
         
         # 发送欢迎消息
         try:
@@ -179,8 +173,7 @@ class WebSocketServer:
         """注销客户端连接"""
         if session_id in self.client_manager.active_connections:
             del self.client_manager.active_connections[session_id]
-            logger.info(f"❌ 客户端已断开: session_id={session_id[:20]}...")
-            logger.info(f"   - 剩余连接数: {len(self.client_manager.active_connections)}")
+            logger.info(f"客户端已断开: session_id={session_id[:20]}...")
             
     async def _handle_message(self, websocket, session_id: str, message: str):
         """
