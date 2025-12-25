@@ -2,7 +2,7 @@
 # ================================
 
 name: "astrbot_plugin_desktop_assistant"
-description: "桌面悬浮球助手 - 提供可拖拽的悬浮球界面、多模态对话窗口、桌面感知和主动对话功能"
+description: "AstrBot桌宠悬浮球（兼容云服务器Astrbot配合本地客户端使用），支持bot感知屏幕主动对话、tts语音自动播放、llm主动/通过指令查看自己电脑屏幕"
 author: "AstrBot Team"
 version: "1.0.1"
 repo: ""
@@ -157,3 +157,4 @@ config_schema:
         label: "快速截图"
 
         default: "Ctrl+Alt+S"
+
