@@ -122,12 +122,21 @@ class Main(star.Star):
         
         # 启动 WebSocket 服务器（在后台任务中启动）
         asyncio.create_task(self._start_ws_server())
+        
+        # 启动过期请求清理任务
+        asyncio.create_task(client_manager.start_cleanup_task())
     
     async def terminate(self):
         """插件终止时的清理操作"""
         global ws_server
         
         logger.info("正在清理桌面悬浮球助手插件...")
+        
+        # 停止过期请求清理任务
+        try:
+            await client_manager.stop_cleanup_task()
+        except Exception as e:
+            logger.error(f"停止清理任务失败: {e}")
         
         # 停止 WebSocket 服务器
         if ws_server:
@@ -709,6 +718,12 @@ class DesktopAssistantAdapter(Platform):
         logger.info("正在停止桌面悬浮球助手...")
         
         self._running = False
+        
+        # 停止过期请求清理任务
+        try:
+            await client_manager.stop_cleanup_task()
+        except Exception as e:
+            logger.error(f"停止清理任务失败: {e}")
         
         # 停止主动对话服务
         if self.proactive_dialog:

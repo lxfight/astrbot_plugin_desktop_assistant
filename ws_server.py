@@ -40,9 +40,9 @@ class StandaloneWebSocketServer:
     - 忙碌状态支持：客户端可报告忙碌状态，暂时延长超时
     """
     
-    # 心跳配置常量 - 参考 Satori 适配器使用 10 秒间隔
-    PING_INTERVAL = 10  # WebSocket 底层心跳间隔（秒）- 从 30 秒降到 10 秒
-    PING_TIMEOUT = 10   # WebSocket 底层心跳超时（秒）- 从 20 秒降到 10 秒
+    # 心跳配置常量 - 优化稳定性：PING_TIMEOUT 必须大于 PING_INTERVAL
+    PING_INTERVAL = 20  # WebSocket 底层心跳间隔（秒）
+    PING_TIMEOUT = 40   # WebSocket 底层心跳超时（秒）- 必须大于 PING_INTERVAL 的 2 倍
     
     # 健康检查配置 - 更频繁的检查
     HEALTH_CHECK_INTERVAL = 20  # 健康检查间隔（秒）- 从 60 秒降到 20 秒
@@ -457,28 +457,32 @@ class StandaloneWebSocketServer:
                     if inactive_time > effective_timeout:
                         logger.warning(
                             f"客户端 {session_id} 超时 ({inactive_time:.0f}s > {effective_timeout}s)，"
-                            f"忙碌状态: {is_busy}，标记为死连接"
+                            f"忙碌状态: {is_busy}，心跳次数: {self._heartbeat_counts.get(session_id, 0)}，"
+                            f"标记为死连接"
                         )
-                        dead_connections.append(session_id)
+                        dead_connections.append((session_id, "inactive_timeout"))
                         continue
                     
                     # 检查 WebSocket 连接状态
                     try:
                         if hasattr(ws, 'open') and not ws.open:
-                            logger.warning(f"客户端 {session_id} WebSocket 已关闭，标记为死连接")
-                            dead_connections.append(session_id)
+                            logger.warning(
+                                f"客户端 {session_id} WebSocket 已关闭，"
+                                f"最后活跃距今: {inactive_time:.1f}s，标记为死连接"
+                            )
+                            dead_connections.append((session_id, "websocket_closed"))
                             continue
                     except Exception as e:
-                        logger.warning(f"检查客户端 {session_id} 状态失败: {e}")
-                        dead_connections.append(session_id)
+                        logger.warning(f"检查客户端 {session_id} 状态失败: {e}，标记为死连接")
+                        dead_connections.append((session_id, f"check_failed: {e}"))
                         continue
                     
                     # 发送健康检查探测（可选，减少日志噪音）
                     # 客户端会通过心跳响应来证明存活
                 
                 # 清理死连接
-                for session_id in dead_connections:
-                    await self._cleanup_dead_connection(session_id)
+                for session_id, reason in dead_connections:
+                    await self._cleanup_dead_connection(session_id, reason)
                 
                 # 输出健康状态摘要（仅在有连接时）
                 if self.connections:
@@ -494,22 +498,44 @@ class StandaloneWebSocketServer:
                 logger.error(f"健康检查异常: {e}")
                 logger.error(traceback.format_exc())
     
-    async def _cleanup_dead_connection(self, session_id: str):
+    async def _cleanup_dead_connection(self, session_id: str, reason: str = "unknown"):
         """
-        清理死连接
+        清理死连接（带详细诊断日志）
         
         Args:
             session_id: 要清理的客户端 session_id
+            reason: 清理原因
         """
+        import time
+        
+        # 收集诊断信息
         ws = self.connections.get(session_id)
+        last_activity = self._last_activity.get(session_id, 0)
+        heartbeat_count = self._heartbeat_counts.get(session_id, 0)
+        is_busy = session_id in self._busy_states
+        busy_until = self._busy_states.get(session_id, 0)
+        
+        # 详细的断开诊断日志
+        current_time = time.time()
+        logger.warning(
+            f"清理死连接: session_id={session_id}, "
+            f"原因={reason}, "
+            f"最后活跃距今={current_time - last_activity:.1f}s, "
+            f"心跳次数={heartbeat_count}, "
+            f"忙碌状态={is_busy}, "
+            f"忙碌剩余={max(0, busy_until - current_time):.1f}s, "
+            f"连接对象存在={ws is not None}, "
+            f"连接打开状态={getattr(ws, 'open', 'N/A') if ws else 'N/A'}"
+        )
+        
         if ws:
             try:
                 # 尝试发送关闭通知
                 await self._send_json(ws, {
                     "type": "connection_timeout",
-                    "message": "Connection timed out due to inactivity"
+                    "message": f"Connection closed: {reason}"
                 })
-                await ws.close(1000, "Connection timeout")
+                await ws.close(1000, f"Connection cleanup: {reason}")
             except Exception as e:
                 logger.debug(f"关闭死连接 {session_id} 失败（可能已断开）: {e}")
         
@@ -529,7 +555,7 @@ class StandaloneWebSocketServer:
             except Exception as e:
                 logger.error(f"断开回调执行失败: {e}")
         
-        logger.info(f"已清理死连接: session_id={session_id}")
+        logger.info(f"已清理死连接: session_id={session_id}, 剩余连接数: {len(self.connections)}")
     
     async def send_to_client(self, session_id: str, data: dict) -> bool:
         """
@@ -559,13 +585,47 @@ class StandaloneWebSocketServer:
         Returns:
             成功发送的客户端数量
         """
+        import time
         success_count = 0
+        failed_sessions = []
+        
         for session_id, websocket in list(self.connections.items()):
             if await self._send_json(websocket, data):
                 success_count += 1
             else:
-                # 发送失败，移除连接
-                self.connections.pop(session_id, None)
+                # 发送失败，记录需要清理的连接
+                failed_sessions.append(session_id)
+        
+        # 清理发送失败的连接（完整清理所有状态）
+        for session_id in failed_sessions:
+            last_activity = self._last_activity.get(session_id, 0)
+            heartbeat_count = self._heartbeat_counts.get(session_id, 0)
+            pending_requests = len([r for r in getattr(self, '_pending_requests', {}).values()
+                                   if getattr(r, 'session_id', None) == session_id])
+            
+            logger.warning(
+                f"广播发送失败，清理连接: session_id={session_id}, "
+                f"最后活跃距今={time.time() - last_activity:.1f}s, "
+                f"心跳次数={heartbeat_count}, "
+                f"待处理请求={pending_requests}"
+            )
+            
+            # 完整清理所有相关状态
+            self.connections.pop(session_id, None)
+            self._last_activity.pop(session_id, None)
+            self._heartbeat_counts.pop(session_id, None)
+            self._busy_states.pop(session_id, None)
+            self._total_disconnections += 1
+            
+            # 触发断开回调
+            if self.on_client_disconnect:
+                try:
+                    result = self.on_client_disconnect(session_id)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as e:
+                    logger.error(f"广播清理时断开回调执行失败: {e}")
+        
         return success_count
     
     async def _send_json(self, websocket: WebSocketServerProtocol, data: dict) -> bool:
@@ -574,8 +634,17 @@ class StandaloneWebSocketServer:
             await websocket.send(json.dumps(data, ensure_ascii=False))
             return True
         except Exception as e:
-            logger.error(f"发送消息失败: {e}")
+            # 记录详细的发送失败信息
+            session_id = self._find_session_by_websocket(websocket)
+            logger.error(f"发送消息失败: session_id={session_id}, error={e}")
             return False
+    
+    def _find_session_by_websocket(self, websocket: WebSocketServerProtocol) -> Optional[str]:
+        """通过 websocket 对象查找 session_id"""
+        for session_id, ws in self.connections.items():
+            if ws is websocket:
+                return session_id
+        return None
     
     def is_client_connected(self, session_id: str) -> bool:
         """

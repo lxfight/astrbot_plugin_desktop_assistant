@@ -126,6 +126,10 @@ class ClientManager:
     SCREENSHOT_MAX_RETRIES = 2  # 最大重试次数
     SCREENSHOT_RETRY_DELAY = 1.0  # 重试延迟（秒）
     
+    # 过期请求清理配置
+    EXPIRED_REQUEST_CLEANUP_INTERVAL = 30  # 清理间隔（秒）
+    SCREENSHOT_REQUEST_MAX_AGE = 60  # 截图请求最大存活时间（秒）
+    
     def __init__(self):
         # 存储客户端的最新桌面状态: session_id -> ClientDesktopState
         self.client_states: Dict[str, ClientDesktopState] = {}
@@ -147,10 +151,99 @@ class ClientManager:
         # 统计信息
         self._screenshot_success_count = 0
         self._screenshot_failure_count = 0
+        
+        # 过期请求清理任务
+        self._cleanup_task: Optional[asyncio.Task] = None
+        self._running = False
     
     def set_ws_server(self, ws_server):
         """设置 WebSocket 服务器引用"""
         self._ws_server = ws_server
+    
+    async def start_cleanup_task(self):
+        """启动过期请求清理任务"""
+        if self._cleanup_task is not None:
+            return
+        self._running = True
+        self._cleanup_task = asyncio.create_task(self._cleanup_expired_requests_loop())
+        logger.info("截图请求清理任务已启动")
+    
+    async def stop_cleanup_task(self):
+        """停止过期请求清理任务"""
+        self._running = False
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
+            logger.info("截图请求清理任务已停止")
+    
+    async def _cleanup_expired_requests_loop(self):
+        """
+        定期清理过期的截图请求
+        
+        防止请求积累过多，影响系统性能
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(self.EXPIRED_REQUEST_CLEANUP_INTERVAL)
+                
+                if not self._running:
+                    break
+                
+                cleaned_count = self._cleanup_expired_requests()
+                
+                if cleaned_count > 0:
+                    logger.info(f"已清理 {cleaned_count} 个过期截图请求")
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"清理过期请求时异常: {e}")
+    
+    def _cleanup_expired_requests(self) -> int:
+        """
+        清理过期的截图请求
+        
+        Returns:
+            清理的请求数量
+        """
+        cleaned_count = 0
+        current_time = time.time()
+        
+        # 遍历所有待处理请求
+        expired_request_ids = []
+        for request_id, request in list(self._pending_screenshot_requests.items()):
+            # 检查请求是否过期（使用请求的 timeout 或最大存活时间）
+            age = (datetime.now() - request.created_at).total_seconds()
+            max_age = max(request.timeout, self.SCREENSHOT_REQUEST_MAX_AGE)
+            
+            if age > max_age:
+                expired_request_ids.append(request_id)
+        
+        # 清理过期请求
+        for request_id in expired_request_ids:
+            request = self._pending_screenshot_requests.pop(request_id, None)
+            future = self._screenshot_futures.pop(request_id, None)
+            
+            if future and not future.done():
+                # 设置超时错误结果
+                future.set_result(ScreenshotResponse(
+                    request_id=request_id,
+                    session_id=request.session_id if request else "",
+                    success=False,
+                    error_message="请求已过期（清理任务）"
+                ))
+            
+            cleaned_count += 1
+            logger.debug(
+                f"清理过期截图请求: request_id={request_id}, "
+                f"session_id={request.session_id if request else 'N/A'}"
+            )
+        
+        return cleaned_count
     
     def get_active_clients_count(self) -> int:
         """获取活跃客户端数量"""
