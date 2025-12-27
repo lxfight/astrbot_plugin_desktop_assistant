@@ -325,6 +325,21 @@ class StandaloneWebSocketServer:
             })
             return
         
+        # 配置请求 - 返回服务端配置
+        if msg_type == "get_config":
+            await self._send_json(websocket, {
+                "type": "server_config",
+                "config": {
+                    "health_check_interval": self.HEALTH_CHECK_INTERVAL,
+                    "inactive_timeout": self.CLIENT_INACTIVE_TIMEOUT,
+                    "ping_interval": self.PING_INTERVAL,
+                    "ping_timeout": self.PING_TIMEOUT
+                },
+                "server_time": time.time()
+            })
+            logger.debug(f"已向客户端 {session_id} 发送服务端配置")
+            return
+        
         # 触发消息回调
         if self.on_message:
             try:
