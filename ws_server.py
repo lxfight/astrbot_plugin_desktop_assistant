@@ -32,19 +32,27 @@ class StandaloneWebSocketServer:
     使用 websockets 库在指定端口运行，不依赖 AstrBot 主应用。
     支持客户端认证、心跳检测、消息分发等功能。
     
-    稳定性增强：
-    - 主动健康检查：定期检测所有连接是否存活
+    稳定性增强（参考 Satori 适配器的成功模式）：
+    - 主动健康检查：每 20 秒检测所有连接是否存活
+    - 服务端主动探测：定期发送 server_ping 探测客户端
     - 死连接清理：自动清理超时未响应的连接
     - 连接状态广播：主动通知客户端连接状态
+    - 忙碌状态支持：客户端可报告忙碌状态，暂时延长超时
     """
     
-    # 心跳配置常量 - 与客户端保持一致
-    PING_INTERVAL = 30  # 心跳间隔（秒）
-    PING_TIMEOUT = 20   # 心跳超时（秒）
+    # 心跳配置常量 - 参考 Satori 适配器使用 10 秒间隔
+    PING_INTERVAL = 10  # WebSocket 底层心跳间隔（秒）- 从 30 秒降到 10 秒
+    PING_TIMEOUT = 10   # WebSocket 底层心跳超时（秒）- 从 20 秒降到 10 秒
     
-    # 健康检查配置
-    HEALTH_CHECK_INTERVAL = 60  # 健康检查间隔（秒）
-    CLIENT_INACTIVE_TIMEOUT = 120  # 客户端不活跃超时（秒），超过此时间无心跳则清理
+    # 健康检查配置 - 更频繁的检查
+    HEALTH_CHECK_INTERVAL = 20  # 健康检查间隔（秒）- 从 60 秒降到 20 秒
+    CLIENT_INACTIVE_TIMEOUT = 60  # 客户端不活跃超时（秒）- 从 120 秒降到 60 秒
+    
+    # 服务端主动探测配置
+    SERVER_PING_INTERVAL = 15  # 服务端主动 ping 间隔（秒）
+    
+    # 忙碌状态超时延长
+    BUSY_STATE_TIMEOUT_EXTENSION = 120  # 忙碌状态下的超时延长（秒）
     
     def __init__(
         self,
@@ -84,11 +92,17 @@ class StandaloneWebSocketServer:
         self._running = False
         self._server_task: Optional[asyncio.Task] = None
         self._health_check_task: Optional[asyncio.Task] = None
+        self._server_ping_task: Optional[asyncio.Task] = None  # 服务端主动探测任务
+        
+        # 客户端忙碌状态: session_id -> busy_until_timestamp
+        self._busy_states: Dict[str, float] = {}
         
         # 统计信息
         self._total_connections: int = 0
         self._total_messages: int = 0
         self._total_disconnections: int = 0
+        self._total_server_pings: int = 0  # 服务端发送的 ping 总数
+        self._total_server_pongs: int = 0  # 收到的 pong 响应总数
         
     @property
     def is_running(self) -> bool:
@@ -130,11 +144,16 @@ class StandaloneWebSocketServer:
             # 启动健康检查任务
             self._health_check_task = asyncio.create_task(self._health_check_loop())
             
+            # 启动服务端主动探测任务
+            self._server_ping_task = asyncio.create_task(self._server_ping_loop())
+            
             logger.info("=" * 60)
-            logger.info("✅ WebSocket 服务器启动成功！")
+            logger.info("✅ WebSocket 服务器启动成功！（稳定性增强版）")
             logger.info(f"   监听地址: {self.host}:{self.port}")
             logger.info(f"   桌面客户端连接地址: ws://服务器IP:{self.port}")
+            logger.info(f"   WebSocket 心跳间隔: {self.PING_INTERVAL}s")
             logger.info(f"   健康检查间隔: {self.HEALTH_CHECK_INTERVAL}s")
+            logger.info(f"   服务端探测间隔: {self.SERVER_PING_INTERVAL}s")
             logger.info(f"   客户端超时时间: {self.CLIENT_INACTIVE_TIMEOUT}s")
             logger.info("=" * 60)
             
@@ -168,6 +187,15 @@ class StandaloneWebSocketServer:
                 pass
             self._health_check_task = None
         
+        # 停止服务端主动探测任务
+        if self._server_ping_task:
+            self._server_ping_task.cancel()
+            try:
+                await self._server_ping_task
+            except asyncio.CancelledError:
+                pass
+            self._server_ping_task = None
+        
         # 关闭所有连接（发送关闭通知）
         for session_id, ws in list(self.connections.items()):
             try:
@@ -182,6 +210,7 @@ class StandaloneWebSocketServer:
         self.connections.clear()
         self._last_activity.clear()
         self._heartbeat_counts.clear()
+        self._busy_states.clear()
         
         # 关闭服务器
         if self._server:
@@ -239,14 +268,20 @@ class StandaloneWebSocketServer:
         self._total_connections += 1
         logger.info(f"✅ 客户端已连接: session_id={session_id}，当前连接数: {len(self.connections)}")
         
-        # 发送连接确认消息
+        # 发送连接确认消息（包含完整的服务端配置）
         await self._send_json(websocket, {
             "type": "connection_status",
             "status": "connected",
             "session_id": session_id,
             "server_time": time.time(),
-            "health_check_interval": self.HEALTH_CHECK_INTERVAL,
-            "inactive_timeout": self.CLIENT_INACTIVE_TIMEOUT
+            "config": {
+                "ping_interval": self.PING_INTERVAL,
+                "ping_timeout": self.PING_TIMEOUT,
+                "health_check_interval": self.HEALTH_CHECK_INTERVAL,
+                "inactive_timeout": self.CLIENT_INACTIVE_TIMEOUT,
+                "server_ping_interval": self.SERVER_PING_INTERVAL,
+                "busy_state_timeout_extension": self.BUSY_STATE_TIMEOUT_EXTENSION,
+            }
         })
         
         # 触发连接回调
@@ -288,6 +323,7 @@ class StandaloneWebSocketServer:
             self.connections.pop(session_id, None)
             self._last_activity.pop(session_id, None)
             self._heartbeat_counts.pop(session_id, None)
+            self._busy_states.pop(session_id, None)
             self._total_disconnections += 1
             logger.info(f"客户端已移除: session_id={session_id}，剩余连接数: {len(self.connections)}")
             
@@ -325,15 +361,50 @@ class StandaloneWebSocketServer:
             })
             return
         
+        # 服务端 ping 的响应（server_pong）
+        if msg_type == "server_pong":
+            self._total_server_pongs += 1
+            client_timestamp = data.get("client_timestamp", 0)
+            latency = time.time() - client_timestamp if client_timestamp else 0
+            logger.debug(f"收到客户端 {session_id} 的 server_pong，延迟: {latency:.3f}s")
+            return
+        
+        # 忙碌状态报告 - 客户端正在执行长操作（如截图）
+        if msg_type == "busy_state":
+            is_busy = data.get("is_busy", False)
+            operation = data.get("operation", "unknown")
+            duration = data.get("duration", 30)  # 默认 30 秒
+            
+            if is_busy:
+                # 设置忙碌状态，延长超时时间
+                busy_until = time.time() + min(duration, self.BUSY_STATE_TIMEOUT_EXTENSION)
+                self._busy_states[session_id] = busy_until
+                logger.info(f"客户端 {session_id} 进入忙碌状态: {operation}，延长超时 {duration}s")
+            else:
+                # 清除忙碌状态
+                self._busy_states.pop(session_id, None)
+                logger.info(f"客户端 {session_id} 退出忙碌状态: {operation}")
+            
+            # 确认忙碌状态
+            await self._send_json(websocket, {
+                "type": "busy_state_ack",
+                "is_busy": is_busy,
+                "operation": operation,
+                "timestamp": time.time()
+            })
+            return
+        
         # 配置请求 - 返回服务端配置
         if msg_type == "get_config":
             await self._send_json(websocket, {
                 "type": "server_config",
                 "config": {
+                    "ping_interval": self.PING_INTERVAL,
+                    "ping_timeout": self.PING_TIMEOUT,
                     "health_check_interval": self.HEALTH_CHECK_INTERVAL,
                     "inactive_timeout": self.CLIENT_INACTIVE_TIMEOUT,
-                    "ping_interval": self.PING_INTERVAL,
-                    "ping_timeout": self.PING_TIMEOUT
+                    "server_ping_interval": self.SERVER_PING_INTERVAL,
+                    "busy_state_timeout_extension": self.BUSY_STATE_TIMEOUT_EXTENSION,
                 },
                 "server_time": time.time()
             })
@@ -373,10 +444,20 @@ class StandaloneWebSocketServer:
                     last_activity = self._last_activity.get(session_id, 0)
                     inactive_time = current_time - last_activity
                     
+                    # 检查客户端是否处于忙碌状态
+                    busy_until = self._busy_states.get(session_id, 0)
+                    is_busy = current_time < busy_until
+                    
+                    # 计算实际超时时间（忙碌状态下延长）
+                    effective_timeout = self.CLIENT_INACTIVE_TIMEOUT
+                    if is_busy:
+                        effective_timeout += self.BUSY_STATE_TIMEOUT_EXTENSION
+                    
                     # 检查连接是否超时
-                    if inactive_time > self.CLIENT_INACTIVE_TIMEOUT:
+                    if inactive_time > effective_timeout:
                         logger.warning(
-                            f"客户端 {session_id} 超时 ({inactive_time:.0f}s > {self.CLIENT_INACTIVE_TIMEOUT}s)，标记为死连接"
+                            f"客户端 {session_id} 超时 ({inactive_time:.0f}s > {effective_timeout}s)，"
+                            f"忙碌状态: {is_busy}，标记为死连接"
                         )
                         dead_connections.append(session_id)
                         continue
@@ -436,6 +517,7 @@ class StandaloneWebSocketServer:
         self.connections.pop(session_id, None)
         self._last_activity.pop(session_id, None)
         self._heartbeat_counts.pop(session_id, None)
+        self._busy_states.pop(session_id, None)
         self._total_disconnections += 1
         
         # 触发断开回调
@@ -560,6 +642,48 @@ class StandaloneWebSocketServer:
             "connection_details": connection_details
         }
     
+    async def _server_ping_loop(self):
+        """
+        服务端主动探测循环
+        
+        定期向所有客户端发送 server_ping，检测连接活性
+        """
+        import time
+        
+        while self._running:
+            try:
+                await asyncio.sleep(self.SERVER_PING_INTERVAL)
+                
+                if not self._running:
+                    break
+                
+                current_time = time.time()
+                
+                # 向所有连接的客户端发送 server_ping
+                for session_id, ws in list(self.connections.items()):
+                    try:
+                        if hasattr(ws, 'open') and ws.open:
+                            await self._send_json(ws, {
+                                "type": "server_ping",
+                                "timestamp": current_time,
+                                "server_time": current_time
+                            })
+                            self._total_server_pings += 1
+                    except Exception as e:
+                        logger.debug(f"向客户端 {session_id} 发送 server_ping 失败: {e}")
+                
+                # 输出探测摘要（仅在有连接时）
+                if self.connections:
+                    logger.debug(
+                        f"服务端探测: 发送 {len(self.connections)} 个 ping，"
+                        f"总计发送 {self._total_server_pings}，收到响应 {self._total_server_pongs}"
+                    )
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"服务端探测循环异常: {e}")
+    
     async def ping_client(self, session_id: str) -> bool:
         """
         主动 ping 指定客户端
@@ -578,8 +702,10 @@ class StandaloneWebSocketServer:
         try:
             await self._send_json(ws, {
                 "type": "server_ping",
-                "timestamp": time.time()
+                "timestamp": time.time(),
+                "server_time": time.time()
             })
+            self._total_server_pings += 1
             return True
         except Exception as e:
             logger.error(f"Ping 客户端 {session_id} 失败: {e}")
