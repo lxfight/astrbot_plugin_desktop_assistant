@@ -301,4 +301,6 @@ MIT License
 
 [报告问题](https://github.com/muyouzhi6/astrbot_plugin_desktop_assistant/issues) · [参与讨论](https://github.com/muyouzhi6/astrbot_plugin_desktop_assistant/discussions)
 
+本插件开发QQ群：1037856742
+
 </div>
