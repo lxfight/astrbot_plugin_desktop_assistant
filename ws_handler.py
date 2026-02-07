@@ -11,7 +11,6 @@ WebSocket 客户端管理器和消息处理模块
 
 import asyncio
 import base64
-import json
 import os
 import time
 import uuid
@@ -203,7 +202,7 @@ class ClientManager:
                 if cleaned_count > 0:
                     logger.info(f"已清理 {cleaned_count} 个过期截图请求")
                 if cleaned_files > 0:
-                    logger.info(f"??? {cleaned_files} ???????")
+                    logger.info(f"已清理 {cleaned_files} 个过期截图文件")
                     
             except asyncio.CancelledError:
                 break
@@ -218,8 +217,7 @@ class ClientManager:
             清理的请求数量
         """
         cleaned_count = 0
-        current_time = time.time()
-        
+
         # 遍历所有待处理请求
         expired_request_ids = []
         for request_id, request in list(self._pending_screenshot_requests.items()):

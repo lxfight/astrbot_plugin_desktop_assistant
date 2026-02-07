@@ -7,7 +7,7 @@
 
 import asyncio
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional
 
@@ -225,12 +225,6 @@ class DesktopMonitorService:
         except Exception as e:
             logger.error(f"回调执行错误: {e}")
             
-    def get_last_state(self, session_id: Optional[str] = None) -> Optional[DesktopState]:
-        """获取最后的桌面状态"""
-        if session_id:
-            return self._client_states.get(session_id)
-        return self._get_any_client_state()
-        
     async def trigger_proactive_now(self, session_id: Optional[str] = None) -> Optional[DesktopState]:
         """
         立即触发一次主动对话

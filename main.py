@@ -22,8 +22,6 @@ from astrbot.api import star, llm_tool
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.event.filter import PermissionType
 from astrbot.api.message_components import Image, Plain
-from astrbot.api.star import Context
-from astrbot.core.message.message_event_result import MessageEventResult, ResultContentType
 from astrbot.core.star.register import register_command
 from astrbot.core.platform import (
     AstrBotMessage,
@@ -175,9 +173,6 @@ class Main(star.Star):
         except (TypeError, ValueError):
             logger.warning(f"无效的 ws_port 配置: {ws_port}，将使用默认端口 {WS_DEFAULT_PORT}")
             ws_port = WS_DEFAULT_PORT
-        
-        # 声明使用全局变量
-        global ws_server
         
         # 创建 WebSocket 服务器
         ws_server = StandaloneWebSocketServer(
